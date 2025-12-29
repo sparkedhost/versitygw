@@ -7,6 +7,7 @@ jobs:
     outputs:
       matrix: ${{ steps.make.outputs.matrix }}
     steps:
+      - uses: actions/checkout@v4
       - id: make
         run: |
           # Example JSON. This MUST be valid JSON (double quotes, etc.)
