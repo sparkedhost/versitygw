@@ -18,7 +18,7 @@ jobs:
              "DELETE_BUCKETS_AFTER_TEST":"true",
              "BACKEND":"posix",
              "AWS_REGION":"us-east-1"
-            },
+            }
           ]}'
           echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
 
