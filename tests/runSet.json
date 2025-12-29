@@ -1,0 +1,10 @@
+{"include":[
+  { "set":  "Run REST base",
+    "IAM_TYPE": "folder",
+    "RUN_SET": "rest-base",
+    "RECREATE_BUCKETS": "false",
+    "DELETE_BUCKETS_AFTER_TEST": "false",
+    "BACKEND": "posix",
+    "AWS_REGION": "us-east-1"
+  }
+]}
