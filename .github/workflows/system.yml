@@ -10,7 +10,7 @@ jobs:
       - id: make
         run: |
           # Example JSON. This MUST be valid JSON (double quotes, etc.)
-#          MATRIX_JSON='{"include":[{"set":"REST base","IAM_TYPE":"folder","RUN_SET":"rest-base","RECREATE_BUCKETS":"true","DELETE_BUCKETS_AFTER_TEST":"true","BACKEND":"posix","AWS_REGION":"us-east-1"},{"set":"REST base static","IAM_TYPE":"folder","RUN_SET":"rest-base","RECREATE_BUCKETS":"false","DELETE_BUCKETS_AFTER_TEST":"false","BACKEND":"posix","AWS_REGION":"us-east-1"}]}'
+          # MATRIX_JSON='{"include":[{"set":"REST base","IAM_TYPE":"folder","RUN_SET":"rest-base","RECREATE_BUCKETS":"true","DELETE_BUCKETS_AFTER_TEST":"true","BACKEND":"posix","AWS_REGION":"us-east-1"},{"set":"REST base static","IAM_TYPE":"folder","RUN_SET":"rest-base","RECREATE_BUCKETS":"false","DELETE_BUCKETS_AFTER_TEST":"false","BACKEND":"posix","AWS_REGION":"us-east-1"}]}'
           MATRIX_JSON=$(jq -c . tests/runSet.json)
           echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
 
