@@ -19,14 +19,15 @@ set -euo pipefail
 
 files=()
 while IFS= read -r f; do
-  file_without_header=${f/tests\/test_/}
-  file_without_sh=${file_without_header/.sh/}
-  run_set=${file_without_sh//_/-}
-  if [ "$run_set" == "rest" ]; then
-    files+=("rest-base")
-    continue
-  fi
-  files+=("$run_set")
+  files+=("$f")
+#  file_without_header=${f/tests\/test_/}
+#  file_without_sh=${file_without_header/.sh/}
+#  run_set=${file_without_sh//_/-}
+#  if [ "$run_set" == "rest" ]; then
+#    files+=("rest-base")
+#    continue
+#  fi
+#  files+=("$run_set")
 done < <(find tests -name 'test_*.sh')
 echo "${files[*]}"
 files_json="$(printf '%s\n' "${files[@]}" | jq -Rsc '
