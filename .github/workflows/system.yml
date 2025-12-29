@@ -317,7 +317,7 @@ jobs:
           if [[ $RECREATE_BUCKETS == "false" ]]; then
             BYPASS_ENV_FILE=true ${{ github.workspace }}/tests/setup_static.sh
           fi
-          BYPASS_ENV_FILE=true ${{ github.workspace }}/$RUN_SET
+          BYPASS_ENV_FILE=true $HOME/bin/bats ${{ github.workspace }}/$RUN_SET
 
       - name: Time report
         run: | 
