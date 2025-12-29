@@ -19,8 +19,15 @@ set -euo pipefail
 
 files=()
 while IFS= read -r f; do
-  files+=("$f")
-done < <(find tests -name 'test_*')
+  file_without_header=${f/tests\/test_/}
+  file_without_sh=${file_without_header/.sh/}
+  run_set=${file_without_sh//_/-}
+  if [ "$run_set" == "rest" ]; then
+    files+=("rest-base")
+    continue
+  fi
+  files+=("$run_set")
+done < <(find tests -name 'test_*.sh')
 echo "${files[*]}"
 files_json="$(printf '%s\n' "${files[@]}" | jq -Rsc '
   split("\n")[:-1]
@@ -28,8 +35,7 @@ files_json="$(printf '%s\n' "${files[@]}" | jq -Rsc '
       include: map(
         . as $f
         | [
-            { set: ("Run " + $f + " (static bucket)"),     RUN_SET: $f, RECREATE_BUCKETS: false, DELETE_BUCKETS_AFTER_TEST: false},
-            { desc: ("Run " + $f + " (non-static bucket)"), RUN_SET: $f, RECREATE_BUCKETS: true, DELETE_BUCKETS_AFTER_TEST: true}
+            { desc: ("Run " + $f + " (non-static bucket)"), RUN_SET: $f, RECREATE_BUCKETS: true, DELETE_BUCKETS_AFTER_TEST: "true", IAM_TYPE: "folder", BACKEND: "posix", AWS_REGION: "us-east-1"}
           ]
       )
       | add
