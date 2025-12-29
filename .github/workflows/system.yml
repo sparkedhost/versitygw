@@ -15,6 +15,7 @@ jobs:
 
   build:
     name: RunTests
+    needs: generate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
