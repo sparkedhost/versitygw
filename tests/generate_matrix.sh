@@ -32,7 +32,7 @@ while IFS= read -r f; do
 #    continue
 #  fi
 #  files+=("$run_set")
-done < <(find tests -name 'test_*.sh')
+done < <(find tests -name 'test_*.sh' | sort)
 echo "${files[*]}"
 files_json="$(printf '%s\n' "${files[@]}" | jq -Rsc '
   split("\n")[:-1]
