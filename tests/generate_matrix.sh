@@ -19,7 +19,11 @@ set -euo pipefail
 
 files=()
 while IFS= read -r f; do
-  files+=("$f")
+  if grep -q '@test' $f; then
+    files+=("$f")
+  else
+    echo "skipping $f"
+  fi
 #  file_without_header=${f/tests\/test_/}
 #  file_without_sh=${file_without_header/.sh/}
 #  run_set=${file_without_sh//_/-}
