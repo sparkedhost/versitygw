@@ -40,7 +40,8 @@ files_json="$(printf '%s\n' "${files[@]}" | jq -Rsc '
       include: map(
         . as $f
         | [
-            { desc: ("Run " + $f + " (non-static bucket)"), RUN_SET: $f, RECREATE_BUCKETS: true, DELETE_BUCKETS_AFTER_TEST: "true", IAM_TYPE: "folder", BACKEND: "posix", AWS_REGION: "us-east-1"}
+            { desc: ("Run " + $f + " (non-static bucket)"), RUN_SET: $f, RECREATE_BUCKETS: true, DELETE_BUCKETS_AFTER_TEST: "true", IAM_TYPE: "folder", BACKEND: "posix", AWS_REGION: "us-east-1"},
+            { desc: ("Run " + $f + " (static bucket)"), RUN_SET: $f, RECREATE_BUCKETS: false, DELETE_BUCKETS_AFTER_TEST: "false", IAM_TYPE: "folder", BACKEND: "posix", AWS_REGION: "us-east-1"}
           ]
       )
       | add
