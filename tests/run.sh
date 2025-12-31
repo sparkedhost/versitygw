@@ -55,6 +55,41 @@ show_help() {
     echo "   rest-bucket                            Run REST bucket tests"
 }
 
+echo_description_line() {
+  if [ "$1" == "" ]; then
+    echo "no file provided"
+    exit 1
+  fi
+  description=${1/-/ }
+  if [[ "$description" == *"rest"* ]]; then
+    description=${description/rest/REST}
+  fi
+  spaces_needed=$((40-${#1}))
+  printf "%s%-${spaces_needed}s%s\n" "$1" "" "Run $description tests"
+}
+
+list_matching_files() {
+  while IFS= read -r f; do
+    if grep -q '@test' "$f"; then
+      files+=("$f")
+    else
+      echo "skipping $f"
+      continue
+    fi
+    file_without_header=${f/tests\/test_/}
+    file_without_sh=${file_without_header/.sh/}
+    run_set=${file_without_sh//_/-}
+    #  if [ "$run_set" == "rest" ]; then
+    #    files+=("rest-base")
+    #    continue
+    #  fi
+    echo "$run_set"
+    echo_description_line "$run_set"
+    run_sets+=("$run_set")
+  done < <(find tests -name 'test_*.sh' | sort)
+  echo "${files[*]}"
+}
+
 handle_param() {
   case $1 in
       -h|--help)
@@ -75,6 +110,27 @@ handle_param() {
           exit 1
           ;;
   esac
+}
+
+handle_param_new() {
+  list_matching_files
+  if [ "$1" == "" ]; then
+    echo "missing run-set option"
+    exit 1
+  fi
+  idx=0
+  for run_set in "${run_sets[@]}"; do
+    if [ "$run_set" == "all" ]; then
+      "$HOME"/bin/bats "${files[$idx]}" || exit_code=$?
+      continue
+    fi
+    if [ "$run_set" == "$1" ]; then
+      echo "rest-bucket set found"
+      "$HOME"/bin/bats "${files[$idx]}" || exit_code=$?
+      break
+    fi
+    ((idx++))
+  done
 }
 
 run_suite() {
@@ -307,7 +363,8 @@ fi
 
 IFS=',' read -ra options <<< "$1"
 for option in "${options[@]}"; do
-  handle_param "$option"
+  #handle_param "$option"
+  handle_param_new "$option"
 done
 
 # shellcheck disable=SC2086
