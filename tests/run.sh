@@ -55,39 +55,37 @@ show_help() {
     echo "   rest-bucket                            Run REST bucket tests"
 }
 
-echo_description_line() {
-  if [ "$1" == "" ]; then
-    echo "no file provided"
-    exit 1
-  fi
-  description=${1/-/ }
-  if [[ "$description" == *"rest"* ]]; then
-    description=${description/rest/REST}
-  fi
-  spaces_needed=$((40-${#1}))
-  printf "%s%-${spaces_needed}s%s\n" "$1" "" "Run $description tests"
+show_help_new() {
+  echo "Usage: $0 [option...]"
+  echo "   -h, --help                             Display this help message and exit"
+  echo "                                          Separate the below by comma"
+  echo "all                                       Attempt to run all tests (not recommended)"
+  echo_help_lines
 }
 
-list_matching_files() {
+echo_help_lines() {
+  gather_test_files
+
+  for run_set in "${run_sets[@]}"; do
+    description=${run_set/-/ }
+    if [[ "$description" == *"rest"* ]]; then
+      description=${description/rest/REST}
+    fi
+    spaces_needed=$((42-${#run_set}))
+    printf "%s%-${spaces_needed}s%s\n" "$run_set" "" "Run $description tests"
+  done
+}
+
+gather_test_files() {
   while IFS= read -r f; do
     if grep -q '@test' "$f"; then
       files+=("$f")
-    else
-      echo "skipping $f"
-      continue
+      file_without_header=${f/tests\/test_/}
+      file_without_sh=${file_without_header/.sh/}
+      run_set=${file_without_sh//_/-}
+      run_sets+=("$run_set")
     fi
-    file_without_header=${f/tests\/test_/}
-    file_without_sh=${file_without_header/.sh/}
-    run_set=${file_without_sh//_/-}
-    #  if [ "$run_set" == "rest" ]; then
-    #    files+=("rest-base")
-    #    continue
-    #  fi
-    echo "$run_set"
-    echo_description_line "$run_set"
-    run_sets+=("$run_set")
   done < <(find tests -name 'test_*.sh' | sort)
-  echo "${files[*]}"
 }
 
 handle_param() {
@@ -112,21 +110,37 @@ handle_param() {
   esac
 }
 
+run_set_if_matching() {
+  if [ "$1" == "" ]; then
+    echo "missing set name"
+    return 1
+  fi
+  complete="false"
+  if [ "$1" == "all" ]; then
+    if ! "$HOME"/bin/bats "${files[$idx]}"; then
+      echo "error running '${files[$idx]}' tests"
+      exit 1
+    fi
+  elif [ "$run_set" == "$1" ]; then
+    if ! "$HOME"/bin/bats "${files[$idx]}"; then
+      echo "error running '${files[$idx]}' tests"
+      exit 1
+    fi
+    complete="true"
+  fi
+}
+
 handle_param_new() {
-  list_matching_files
+  echo "run set: $1"
+  gather_test_files
   if [ "$1" == "" ]; then
     echo "missing run-set option"
     exit 1
   fi
   idx=0
   for run_set in "${run_sets[@]}"; do
-    if [ "$run_set" == "all" ]; then
-      "$HOME"/bin/bats "${files[$idx]}" || exit_code=$?
-      continue
-    fi
-    if [ "$run_set" == "$1" ]; then
-      echo "rest-bucket set found"
-      "$HOME"/bin/bats "${files[$idx]}" || exit_code=$?
+    run_set_if_matching "$1"
+    if [ "$complete" == "true" ]; then
       break
     fi
     ((idx++))
@@ -356,10 +370,11 @@ run_suite() {
   fi
 }
 
-if [ $# -le 0 ]; then
-  show_help
+if [ $# -le 0 ] || [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
+  show_help_new
   exit 0
 fi
+echo "param one:  $1"
 
 IFS=',' read -ra options <<< "$1"
 for option in "${options[@]}"; do
