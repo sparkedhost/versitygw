@@ -40,6 +40,7 @@ import (
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/debuglogger"
+	"github.com/versity/versitygw/observability"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -1283,10 +1284,17 @@ func (p *Posix) CreateMultipartUpload(ctx context.Context, mpu s3response.Create
 	tmppath := filepath.Join(bucket, objdir)
 	// the unique upload id is a directory for all of the parts
 	// associated with this specific multipart upload
-	err = os.MkdirAll(filepath.Join(tmppath, uploadID), 0755)
-	if err != nil {
+	uploadDir := filepath.Join(tmppath, uploadID)
+
+	// Use EnsureDir for reliable directory creation with retries
+	if err := observability.EnsureDir(uploadDir, 0755, 3); err != nil {
+		mpErr := observability.NewMultipartError(err, "create_mp_dir", bucket, object, uploadID, 0, uploadDir)
+		observability.ReportMultipartError(ctx, mpErr)
 		return s3response.InitiateMultipartUploadResult{}, fmt.Errorf("create upload temp dir: %w", err)
 	}
+
+	// Record the multipart upload start for metrics
+	observability.RecordMultipartUploadStart(bucket)
 
 	// set an attribute with the original object name so that we can
 	// map the hashed name back to the original object name
@@ -1297,6 +1305,7 @@ func (p *Posix) CreateMultipartUpload(ctx context.Context, mpu s3response.Create
 		// other uploads for the same object name outstanding
 		os.RemoveAll(filepath.Join(tmppath, uploadID))
 		os.Remove(tmppath)
+		observability.RecordMultipartUploadComplete(bucket) // decrement active uploads
 		return s3response.InitiateMultipartUploadResult{}, fmt.Errorf("set name attr for upload: %w", err)
 	}
 
@@ -1612,14 +1621,19 @@ func (p *Posix) CompleteMultipartUploadWithCopy(ctx context.Context, input *s3.C
 	for i, part := range parts {
 		partObjPath := filepath.Join(objdir, uploadID, fmt.Sprintf("%v", *part.PartNumber))
 		fullPartPath := filepath.Join(bucket, partObjPath)
-		pf, err := os.Open(fullPartPath)
+
+		// Use SafeReadPartFile for better error handling and observability
+		pf, pfi, err := observability.SafeReadPartFile(ctx, bucket, object, uploadID, *part.PartNumber, fullPartPath)
 		if err != nil {
-			return res, "", fmt.Errorf("open part %v: %v", *part.PartNumber, err)
-		}
-		pfi, err := pf.Stat()
-		if err != nil {
-			pf.Close()
-			return res, "", fmt.Errorf("stat part %v: %v", *part.PartNumber, err)
+			// Report detailed error with diagnostic information
+			mpErr := observability.NewMultipartError(err, "complete_mp_open_part", bucket, object, uploadID, *part.PartNumber, fullPartPath)
+			observability.ReportMultipartError(ctx, mpErr)
+
+			// Log diagnostic information
+			diagnosis := observability.DiagnoseMultipartIssue(bucket, objdir, uploadID)
+			debuglogger.Logf("multipart part open failed - diagnosis: %+v", diagnosis)
+
+			return res, "", fmt.Errorf("open part %v: %w", *part.PartNumber, err)
 		}
 
 		var rdr io.Reader = pf
@@ -2481,13 +2495,27 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 	sum := sha256.Sum256([]byte(object))
 	objdir := filepath.Join(MetaTmpMultipartDir, fmt.Sprintf("%x", sum))
 	mpPath := filepath.Join(objdir, uploadID)
+	fullMpPath := filepath.Join(bucket, mpPath)
 
-	_, err = os.Stat(filepath.Join(bucket, mpPath))
+	// Check if multipart upload exists
+	mpInfo, err := os.Stat(fullMpPath)
 	if errors.Is(err, fs.ErrNotExist) {
+		mpErr := observability.NewMultipartError(err, "upload_part_stat", bucket, object, uploadID, *part, fullMpPath)
+		observability.ReportMultipartError(ctx, mpErr)
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
 	}
 	if err != nil {
+		mpErr := observability.NewMultipartError(err, "upload_part_stat", bucket, object, uploadID, *part, fullMpPath)
+		observability.ReportMultipartError(ctx, mpErr)
 		return nil, fmt.Errorf("stat uploadid: %w", err)
+	}
+
+	// Verify it's a directory
+	if !mpInfo.IsDir() {
+		err := fmt.Errorf("multipart upload path is not a directory: %s", fullMpPath)
+		mpErr := observability.NewMultipartError(err, "upload_part_validate", bucket, object, uploadID, *part, fullMpPath)
+		observability.ReportMultipartError(ctx, mpErr)
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
 	}
 
 	partPath := filepath.Join(mpPath, fmt.Sprintf("%v", *part))
@@ -2498,9 +2526,14 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 		if errors.Is(err, syscall.EDQUOT) {
 			return nil, s3err.GetAPIError(s3err.ErrQuotaExceeded)
 		}
+		mpErr := observability.NewMultipartError(err, "upload_part_open_tmp", bucket, object, uploadID, *part, partPath)
+		observability.ReportMultipartError(ctx, mpErr)
 		return nil, fmt.Errorf("open temp file: %w", err)
 	}
 	defer f.cleanup()
+
+	// Record metrics for the part upload
+	observability.RecordMultipartPart(bucket, length)
 
 	hash := md5.New()
 	tr := io.TeeReader(r, hash)

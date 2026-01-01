@@ -24,12 +24,14 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/metrics"
+	"github.com/versity/versitygw/observability"
 	"github.com/versity/versitygw/s3api"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3api/utils"
@@ -89,6 +91,25 @@ var (
 	ipaUser, ipaPassword                   string
 	ipaInsecure                            bool
 	iamDebug                               bool
+	// OpenTelemetry configuration
+	otelEnabled                            bool
+	otelEndpoint                           string
+	otelServiceName                        string
+	otelEnvironment                        string
+	otelUseHTTP                            bool
+	otelInsecure                           bool
+	otelSampleRate                         float64
+	// Sentry configuration
+	sentryEnabled                          bool
+	sentryDSN                              string
+	sentryEnvironment                      string
+	sentrySampleRate                       float64
+	sentryTracesSampleRate                 float64
+	sentryDebug                            bool
+	// Prometheus configuration
+	prometheusEnabled                      bool
+	prometheusPort                         string
+	prometheusPath                         string
 )
 
 var (
@@ -630,6 +651,113 @@ func initFlags() []cli.Flag {
 			EnvVars:     []string{"VGW_IPA_INSECURE"},
 			Destination: &ipaInsecure,
 		},
+		// OpenTelemetry flags
+		&cli.BoolFlag{
+			Name:        "otel-enabled",
+			Usage:       "enable OpenTelemetry tracing",
+			EnvVars:     []string{"VGW_OTEL_ENABLED"},
+			Destination: &otelEnabled,
+		},
+		&cli.StringFlag{
+			Name:        "otel-endpoint",
+			Usage:       "OpenTelemetry collector endpoint (e.g., localhost:4317 for gRPC, localhost:4318 for HTTP)",
+			EnvVars:     []string{"VGW_OTEL_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"},
+			Destination: &otelEndpoint,
+		},
+		&cli.StringFlag{
+			Name:        "otel-service-name",
+			Usage:       "service name for OpenTelemetry traces",
+			EnvVars:     []string{"VGW_OTEL_SERVICE_NAME", "OTEL_SERVICE_NAME"},
+			Value:       "versitygw",
+			Destination: &otelServiceName,
+		},
+		&cli.StringFlag{
+			Name:        "otel-environment",
+			Usage:       "deployment environment for tracing (e.g., production, staging)",
+			EnvVars:     []string{"VGW_OTEL_ENVIRONMENT"},
+			Value:       "development",
+			Destination: &otelEnvironment,
+		},
+		&cli.BoolFlag{
+			Name:        "otel-http",
+			Usage:       "use HTTP protocol instead of gRPC for OTLP export",
+			EnvVars:     []string{"VGW_OTEL_HTTP"},
+			Destination: &otelUseHTTP,
+		},
+		&cli.BoolFlag{
+			Name:        "otel-insecure",
+			Usage:       "disable TLS for OTLP connection",
+			EnvVars:     []string{"VGW_OTEL_INSECURE"},
+			Destination: &otelInsecure,
+		},
+		&cli.Float64Flag{
+			Name:        "otel-sample-rate",
+			Usage:       "trace sampling rate (0.0 to 1.0, where 1.0 = 100%)",
+			EnvVars:     []string{"VGW_OTEL_SAMPLE_RATE"},
+			Value:       1.0,
+			Destination: &otelSampleRate,
+		},
+		// Sentry flags
+		&cli.BoolFlag{
+			Name:        "sentry-enabled",
+			Usage:       "enable Sentry error reporting",
+			EnvVars:     []string{"VGW_SENTRY_ENABLED"},
+			Destination: &sentryEnabled,
+		},
+		&cli.StringFlag{
+			Name:        "sentry-dsn",
+			Usage:       "Sentry DSN for error reporting",
+			EnvVars:     []string{"VGW_SENTRY_DSN", "SENTRY_DSN"},
+			Destination: &sentryDSN,
+		},
+		&cli.StringFlag{
+			Name:        "sentry-environment",
+			Usage:       "Sentry environment tag",
+			EnvVars:     []string{"VGW_SENTRY_ENVIRONMENT", "SENTRY_ENVIRONMENT"},
+			Value:       "development",
+			Destination: &sentryEnvironment,
+		},
+		&cli.Float64Flag{
+			Name:        "sentry-sample-rate",
+			Usage:       "Sentry error sample rate (0.0 to 1.0)",
+			EnvVars:     []string{"VGW_SENTRY_SAMPLE_RATE"},
+			Value:       1.0,
+			Destination: &sentrySampleRate,
+		},
+		&cli.Float64Flag{
+			Name:        "sentry-traces-sample-rate",
+			Usage:       "Sentry performance traces sample rate (0.0 to 1.0)",
+			EnvVars:     []string{"VGW_SENTRY_TRACES_SAMPLE_RATE"},
+			Value:       0.1,
+			Destination: &sentryTracesSampleRate,
+		},
+		&cli.BoolFlag{
+			Name:        "sentry-debug",
+			Usage:       "enable Sentry debug mode",
+			EnvVars:     []string{"VGW_SENTRY_DEBUG"},
+			Destination: &sentryDebug,
+		},
+		// Prometheus flags
+		&cli.BoolFlag{
+			Name:        "prometheus-enabled",
+			Usage:       "enable Prometheus metrics endpoint",
+			EnvVars:     []string{"VGW_PROMETHEUS_ENABLED"},
+			Destination: &prometheusEnabled,
+		},
+		&cli.StringFlag{
+			Name:        "prometheus-port",
+			Usage:       "port for Prometheus metrics endpoint",
+			EnvVars:     []string{"VGW_PROMETHEUS_PORT"},
+			Value:       "9090",
+			Destination: &prometheusPort,
+		},
+		&cli.StringFlag{
+			Name:        "prometheus-path",
+			Usage:       "path for Prometheus metrics endpoint",
+			EnvVars:     []string{"VGW_PROMETHEUS_PATH"},
+			Value:       "/metrics",
+			Destination: &prometheusPath,
+		},
 	}
 }
 
@@ -639,6 +767,46 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 	}
 
 	utils.SetBucketNameValidationStrict(!disableStrictBucketNames)
+
+	// Initialize OpenTelemetry
+	if err := observability.InitOTEL(ctx, observability.OTELConfig{
+		Enabled:        otelEnabled,
+		Endpoint:       otelEndpoint,
+		ServiceName:    otelServiceName,
+		ServiceVersion: Version,
+		Environment:    otelEnvironment,
+		UseHTTP:        otelUseHTTP,
+		Insecure:       otelInsecure,
+		SampleRate:     otelSampleRate,
+	}); err != nil {
+		return fmt.Errorf("failed to initialize OpenTelemetry: %w", err)
+	}
+	defer observability.ShutdownOTEL(ctx)
+
+	// Initialize Sentry
+	if err := observability.InitSentry(observability.SentryConfig{
+		Enabled:          sentryEnabled,
+		DSN:              sentryDSN,
+		Environment:      sentryEnvironment,
+		Release:          Version,
+		SampleRate:       sentrySampleRate,
+		TracesSampleRate: sentryTracesSampleRate,
+		Debug:            sentryDebug,
+	}); err != nil {
+		return fmt.Errorf("failed to initialize Sentry: %w", err)
+	}
+	defer observability.ShutdownSentry(2 * time.Second)
+
+	// Initialize Prometheus metrics
+	if err := observability.InitPrometheus(observability.PrometheusConfig{
+		Enabled:   prometheusEnabled,
+		Port:      prometheusPort,
+		Path:      prometheusPath,
+		Namespace: "versitygw",
+	}); err != nil {
+		return fmt.Errorf("failed to initialize Prometheus: %w", err)
+	}
+	defer observability.ShutdownPrometheus(ctx)
 
 	if pprof != "" {
 		// listen on specified port for pprof debug
