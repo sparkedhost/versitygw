@@ -23,8 +23,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/versity/versitygw/auth"
+	"github.com/versity/versitygw/observability"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const (
@@ -41,12 +44,22 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 	acct := accounts{root: root, iam: iam}
 
 	return func(ctx *fiber.Ctx) error {
+		// Start auth tracing span
+		userCtx := ctx.UserContext()
+		userCtx, span := observability.StartAuthSpan(userCtx, "V4Signature")
+		defer span.End()
+		ctx.SetUserContext(userCtx)
+
 		// The bucket is public, no need to check this signature
 		if utils.ContextKeyPublicBucket.IsSet(ctx) {
+			span.SetAttributes(attribute.Bool("auth.public_bucket", true))
+			span.SetStatus(codes.Ok, "public bucket")
 			return nil
 		}
 		// If ContextKeyAuthenticated is set in context locals, it means it was presigned url case
 		if utils.ContextKeyAuthenticated.IsSet(ctx) {
+			span.SetAttributes(attribute.Bool("auth.presigned", true))
+			span.SetStatus(codes.Ok, "presigned URL")
 			return nil
 		}
 
@@ -79,6 +92,8 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 		}
 
 		if authData.Region != region {
+			span.SetAttributes(attribute.String("auth.error", "region_mismatch"))
+			span.SetStatus(codes.Error, "region mismatch")
 			return s3err.MalformedAuth.IncorrectRegion(region, authData.Region)
 		}
 
@@ -86,13 +101,26 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 
 		account, err := acct.getAccount(authData.Access)
 		if err == auth.ErrNoSuchUser {
+			span.SetAttributes(attribute.String("auth.error", "invalid_access_key"))
+			span.SetStatus(codes.Error, "invalid access key")
 			return s3err.GetAPIError(s3err.ErrInvalidAccessKeyID)
 		}
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 
+		// Record successful account lookup
+		span.SetAttributes(
+			attribute.String("auth.access_key", authData.Access),
+			attribute.String("auth.role", string(account.Role)),
+			attribute.Bool("auth.is_root", authData.Access == root.Access),
+		)
+
 		if date[:8] != authData.Date {
+			span.SetAttributes(attribute.String("auth.error", "date_mismatch"))
+			span.SetStatus(codes.Error, "date mismatch")
 			return s3err.MalformedAuth.DateMismatch()
 		}
 

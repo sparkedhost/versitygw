@@ -908,6 +908,12 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		return fmt.Errorf("setup iam: %w", err)
 	}
 
+	// Wrap IAM with tracing if OTEL is enabled
+	var tracedIam auth.IAMService = iam
+	if observability.IsEnabled() {
+		tracedIam = auth.NewTracingIAMService(iam)
+	}
+
 	loggers, err := s3log.InitLogger(&s3log.LogConfig{
 		LogFile:      accessLog,
 		WebhookURL:   logWebhookURL,
@@ -942,10 +948,16 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		return fmt.Errorf("init bucket event notifications: %w", err)
 	}
 
-	srv, err := s3api.New(be, middlewares.RootUserConfig{
+	// Wrap backend with tracing if OTEL is enabled
+	var tracedBe backend.Backend = be
+	if observability.IsEnabled() {
+		tracedBe = backend.NewTracingBackend(be)
+	}
+
+	srv, err := s3api.New(tracedBe, middlewares.RootUserConfig{
 		Access: rootUserAccess,
 		Secret: rootUserSecret,
-	}, port, region, iam, loggers.S3Logger, loggers.AdminLogger, evSender, metricsManager, opts...)
+	}, port, region, tracedIam, loggers.S3Logger, loggers.AdminLogger, evSender, metricsManager, opts...)
 	if err != nil {
 		return fmt.Errorf("init gateway: %v", err)
 	}

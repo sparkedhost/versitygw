@@ -45,6 +45,7 @@ import (
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Posix struct {
@@ -84,6 +85,9 @@ type Posix struct {
 	// enable posix level bucket name validations, not needed if the
 	// frontend handlers are already validating bucket names
 	validateBucketName bool
+
+	// fastCopyConfig holds settings for optimized multipart assembly
+	fastCopyConfig FastCopyConfig
 }
 
 var _ backend.Backend = &Posix{}
@@ -141,6 +145,16 @@ type PosixOpts struct {
 	// incorrect access to the filesystem. This is only needed if the
 	// frontend is not already validating bucket names.
 	ValidateBucketNames bool
+	// FastCopyEnabled enables optimized multipart assembly using copy_file_range
+	// and parallel part processing (Linux only, defaults to true)
+	FastCopyEnabled bool
+	// FastCopyParallelParts enables parallel part assembly for CompleteMultipartUpload
+	// (defaults to true on Linux)
+	FastCopyParallelParts bool
+	// FastCopyWorkers is the number of parallel workers for part assembly (default 4)
+	FastCopyWorkers int
+	// FastCopyBufferSizeMB is the buffer size in MB for fallback copy (default 4)
+	FastCopyBufferSizeMB int
 }
 
 func New(rootdir string, meta meta.MetadataStorer, opts PosixOpts) (*Posix, error) {
@@ -189,6 +203,22 @@ func New(rootdir string, meta meta.MetadataStorer, opts PosixOpts) (*Posix, erro
 		fmt.Println("Using sidecar directory for metadata:", sidecardirAbs)
 	}
 
+	// Configure fast copy settings
+	fcConfig := DefaultFastCopyConfig()
+	if !opts.FastCopyEnabled {
+		// If not explicitly enabled, use defaults (enabled on Linux)
+		fcConfig.UseCopyFileRange = true
+	}
+	if opts.FastCopyParallelParts {
+		fcConfig.ParallelParts = true
+	}
+	if opts.FastCopyWorkers > 0 {
+		fcConfig.MaxParallelWorkers = opts.FastCopyWorkers
+	}
+	if opts.FastCopyBufferSizeMB > 0 {
+		fcConfig.BufferSize = opts.FastCopyBufferSizeMB * 1024 * 1024
+	}
+
 	return &Posix{
 		meta:               meta,
 		rootfd:             f,
@@ -202,6 +232,7 @@ func New(rootdir string, meta meta.MetadataStorer, opts PosixOpts) (*Posix, erro
 		newDirPerm:         opts.NewDirPerm,
 		forceNoTmpFile:     opts.ForceNoTmpFile,
 		validateBucketName: opts.ValidateBucketNames,
+		fastCopyConfig:     fcConfig,
 	}, nil
 }
 
@@ -1617,7 +1648,21 @@ func (p *Posix) CompleteMultipartUploadWithCopy(ctx context.Context, input *s3.C
 	}
 	defer f.cleanup()
 
+	// Hint to kernel that we'll be writing sequentially for large files
+	if totalsize > 100*1024*1024 { // > 100MB
+		PrepareForSequentialWrite(f.File(), totalsize)
+	}
+
+	// Trace the overall part assembly operation
+	assemblyStart := time.Now()
+	_, assemblySpan := TracedAssembleParts(ctx, bucket, object, uploadID, len(parts), totalsize)
+	defer func() {
+		RecordIOMetrics(assemblySpan, totalsize, totalsize, time.Since(assemblyStart))
+		assemblySpan.End()
+	}()
+
 	var composableCsum string
+	var totalBytesCopied int64
 	for i, part := range parts {
 		partObjPath := filepath.Join(objdir, uploadID, fmt.Sprintf("%v", *part.PartNumber))
 		fullPartPath := filepath.Join(bucket, partObjPath)
@@ -1634,6 +1679,11 @@ func (p *Posix) CompleteMultipartUploadWithCopy(ctx context.Context, input *s3.C
 			debuglogger.Logf("multipart part open failed - diagnosis: %+v", diagnosis)
 
 			return res, "", fmt.Errorf("open part %v: %w", *part.PartNumber, err)
+		}
+
+		// Hint to kernel for sequential read on large parts
+		if pfi.Size() > 10*1024*1024 { // > 10MB
+			PrepareForSequentialRead(pf, pfi.Size())
 		}
 
 		var rdr io.Reader = pf
@@ -1665,18 +1715,55 @@ func (p *Posix) CompleteMultipartUploadWithCopy(ctx context.Context, input *s3.C
 			}
 		}
 
+		// Trace individual part copy operation
+		var copyMethod string
+		partCopyStart := time.Now()
+		var bytesCopied int64
+
 		if customMove != nil {
+			copyMethod = "custom_move"
+			_, partSpan := TracedCopyPart(ctx, int(*part.PartNumber), pfi.Size(), copyMethod)
 			err = customMove(pf, f.File())
 			if err != nil {
 				// Fail back to standard copy
+				copyMethod = "io_copy_fallback"
+				partSpan.SetAttributes(attribute.String("posix.copy_method", copyMethod))
 				debuglogger.Logf("custom data block move failed (%q/%q): %v, failing back to io.Copy()",
 					bucket, object, err)
 				fw := f.File()
 				fw.Seek(0, io.SeekEnd)
-				_, err = io.Copy(fw, rdr)
+				bytesCopied, err = io.Copy(fw, rdr)
+			} else {
+				bytesCopied = pfi.Size()
 			}
+			RecordIOMetrics(partSpan, bytesCopied, pfi.Size(), time.Since(partCopyStart))
+			partSpan.End()
 		} else {
-			_, err = io.Copy(f.File(), rdr)
+			// Use optimized fast copy when no checksum streaming is needed
+			// (i.e., when rdr is directly the file, not wrapped in hashRdr)
+			if rdr == pf {
+				copyMethod = "copy_file_range"
+				_, partSpan := TracedCopyPart(ctx, int(*part.PartNumber), pfi.Size(), copyMethod)
+				// Direct file-to-file copy - use copy_file_range on Linux
+				bytesCopied, err = FastFileCopy(ctx, pf, f.File(), pfi.Size(), p.fastCopyConfig)
+				RecordIOMetrics(partSpan, bytesCopied, pfi.Size(), time.Since(partCopyStart))
+				partSpan.End()
+			} else {
+				copyMethod = "io_copy_with_checksum"
+				_, partSpan := TracedCopyPart(ctx, int(*part.PartNumber), pfi.Size(), copyMethod)
+				// Must go through reader (for checksum computation)
+				bytesCopied, err = io.Copy(f.File(), rdr)
+				RecordIOMetrics(partSpan, bytesCopied, pfi.Size(), time.Since(partCopyStart))
+				partSpan.End()
+			}
+		}
+
+		totalBytesCopied += bytesCopied
+		RecordPartAssemblyProgress(assemblySpan, i+1, len(parts), totalBytesCopied)
+
+		// Drop page cache for large parts after reading to reduce memory pressure
+		if pfi.Size() > 10*1024*1024 { // > 10MB
+			DropPageCache(pf, 0, pfi.Size())
 		}
 		pf.Close()
 		if err != nil {
@@ -2520,16 +2607,20 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 
 	partPath := filepath.Join(mpPath, fmt.Sprintf("%v", *part))
 
+	// Trace temp file creation
+	tmpCtx, tmpSpan := TracedTmpFileOpen(ctx, filepath.Join(bucket, objdir), bucket, partPath, length)
 	f, err := p.openTmpFile(filepath.Join(bucket, objdir),
 		bucket, partPath, length, acct, doFalloc, p.forceNoTmpFile)
 	if err != nil {
+		tmpSpan.End()
 		if errors.Is(err, syscall.EDQUOT) {
 			return nil, s3err.GetAPIError(s3err.ErrQuotaExceeded)
 		}
 		mpErr := observability.NewMultipartError(err, "upload_part_open_tmp", bucket, object, uploadID, *part, partPath)
-		observability.ReportMultipartError(ctx, mpErr)
+		observability.ReportMultipartError(tmpCtx, mpErr)
 		return nil, fmt.Errorf("open temp file: %w", err)
 	}
+	tmpSpan.End()
 	defer f.cleanup()
 
 	// Record metrics for the part upload
@@ -2607,8 +2698,14 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 		tr = hashRdr
 	}
 
-	_, err = io.Copy(f, tr)
+	// Trace the data write operation
+	writeStart := time.Now()
+	_, writeSpan := TracedWriteData(ctx, bucket, object, length)
+	bytesWritten, err := io.Copy(f, tr)
+	RecordIOMetrics(writeSpan, bytesWritten, 0, time.Since(writeStart))
 	if err != nil {
+		writeSpan.RecordError(err)
+		writeSpan.End()
 		if errors.Is(err, syscall.EDQUOT) {
 			return nil, s3err.GetAPIError(s3err.ErrQuotaExceeded)
 		}
@@ -2618,6 +2715,7 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 		}
 		return nil, fmt.Errorf("write part data: %w", err)
 	}
+	writeSpan.End()
 
 	etag := backend.GenerateEtag(hash)
 	err = p.meta.StoreAttribute(f.File(), bucket, partPath, etagkey, []byte(etag))
@@ -2676,10 +2774,15 @@ func (p *Posix) UploadPartWithPostFunc(ctx context.Context, input *s3.UploadPart
 		return nil, fmt.Errorf("upload part post process failed: %w", err)
 	}
 
+	// Trace the file link operation
+	_, linkSpan := TracedLinkFile(ctx, bucket, partPath)
 	err = f.link()
 	if err != nil {
+		linkSpan.RecordError(err)
+		linkSpan.End()
 		return nil, fmt.Errorf("link object in namespace: %w", err)
 	}
+	linkSpan.End()
 
 	return res, nil
 }
@@ -3050,14 +3153,20 @@ func (p *Posix) PutObjectWithPostFunc(ctx context.Context, po s3response.PutObje
 		return s3response.PutObjectOutput{}, fmt.Errorf("stat object: %w", err)
 	}
 
+	// Trace temp file creation for PutObject
+	tmpCtx, tmpSpan := TracedTmpFileOpen(ctx, filepath.Join(*po.Bucket, MetaTmpDir), *po.Bucket, *po.Key, contentLength)
 	f, err := p.openTmpFile(filepath.Join(*po.Bucket, MetaTmpDir),
 		*po.Bucket, *po.Key, contentLength, acct, doFalloc, p.forceNoTmpFile)
 	if err != nil {
+		tmpSpan.RecordError(err)
+		tmpSpan.End()
 		if errors.Is(err, syscall.EDQUOT) {
 			return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrQuotaExceeded)
 		}
 		return s3response.PutObjectOutput{}, fmt.Errorf("open temp file: %w", err)
 	}
+	tmpSpan.End()
+	_ = tmpCtx // suppress unused variable warning
 	defer f.cleanup()
 
 	objsize := f.size
@@ -3115,8 +3224,14 @@ func (p *Posix) PutObjectWithPostFunc(ctx context.Context, po s3response.PutObje
 		}
 	}
 
-	_, err = io.Copy(f, rdr)
+	// Trace the data write operation for PutObject
+	writeStart := time.Now()
+	_, writeSpan := TracedWriteData(ctx, *po.Bucket, *po.Key, contentLength)
+	bytesWritten, err := io.Copy(f, rdr)
+	RecordIOMetrics(writeSpan, bytesWritten, 0, time.Since(writeStart))
 	if err != nil {
+		writeSpan.RecordError(err)
+		writeSpan.End()
 		if errors.Is(err, syscall.EDQUOT) {
 			return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrQuotaExceeded)
 		}
@@ -3126,6 +3241,7 @@ func (p *Posix) PutObjectWithPostFunc(ctx context.Context, po s3response.PutObje
 		}
 		return s3response.PutObjectOutput{}, fmt.Errorf("write object data: %w", err)
 	}
+	writeSpan.End()
 
 	dir := filepath.Dir(name)
 	if dir != "" {
@@ -3231,16 +3347,22 @@ func (p *Posix) PutObjectWithPostFunc(ctx context.Context, po s3response.PutObje
 			fmt.Errorf("put object post process failed: %w", err)
 	}
 
+	// Trace the file link operation for PutObject
+	_, linkSpan := TracedLinkFile(ctx, *po.Bucket, *po.Key)
 	err = f.link()
 	if errors.Is(err, syscall.EEXIST) {
+		linkSpan.End()
 		return s3response.PutObjectOutput{
 			ETag:      etag,
 			VersionID: versionID,
 		}, nil
 	}
 	if err != nil {
+		linkSpan.RecordError(err)
+		linkSpan.End()
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrExistingObjectIsDirectory)
 	}
+	linkSpan.End()
 
 	// Set object tagging
 	if tags != nil {

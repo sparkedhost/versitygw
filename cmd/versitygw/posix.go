@@ -32,6 +32,10 @@ var (
 	sidecar            string
 	nometa             bool
 	forceNoTmpFile     bool
+	fastCopyEnabled    bool
+	fastCopyParallel   bool
+	fastCopyWorkers    int
+	fastCopyBufferMB   int
 )
 
 func posixCommand() *cli.Command {
@@ -100,6 +104,34 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 				EnvVars:     []string{"VGW_DISABLE_OTMP"},
 				Destination: &forceNoTmpFile,
 			},
+			&cli.BoolFlag{
+				Name:        "fast-copy",
+				Usage:       "enable optimized multipart assembly using copy_file_range (Linux only)",
+				EnvVars:     []string{"VGW_FAST_COPY"},
+				Destination: &fastCopyEnabled,
+				Value:       true,
+			},
+			&cli.BoolFlag{
+				Name:        "fast-copy-parallel",
+				Usage:       "enable parallel part assembly for multipart uploads (Linux only)",
+				EnvVars:     []string{"VGW_FAST_COPY_PARALLEL"},
+				Destination: &fastCopyParallel,
+				Value:       true,
+			},
+			&cli.IntFlag{
+				Name:        "fast-copy-workers",
+				Usage:       "number of parallel workers for multipart assembly (default: 4)",
+				EnvVars:     []string{"VGW_FAST_COPY_WORKERS"},
+				Destination: &fastCopyWorkers,
+				Value:       4,
+			},
+			&cli.IntFlag{
+				Name:        "fast-copy-buffer-mb",
+				Usage:       "buffer size in MB for fallback copy operations (default: 4)",
+				EnvVars:     []string{"VGW_FAST_COPY_BUFFER_MB"},
+				Destination: &fastCopyBufferMB,
+				Value:       4,
+			},
 		},
 	}
 }
@@ -120,13 +152,17 @@ func runPosix(ctx *cli.Context) error {
 	}
 
 	opts := posix.PosixOpts{
-		ChownUID:            chownuid,
-		ChownGID:            chowngid,
-		BucketLinks:         bucketlinks,
-		VersioningDir:       versioningDir,
-		NewDirPerm:          fs.FileMode(dirPerms),
-		ForceNoTmpFile:      forceNoTmpFile,
-		ValidateBucketNames: disableStrictBucketNames,
+		ChownUID:              chownuid,
+		ChownGID:              chowngid,
+		BucketLinks:           bucketlinks,
+		VersioningDir:         versioningDir,
+		NewDirPerm:            fs.FileMode(dirPerms),
+		ForceNoTmpFile:        forceNoTmpFile,
+		ValidateBucketNames:   disableStrictBucketNames,
+		FastCopyEnabled:       fastCopyEnabled,
+		FastCopyParallelParts: fastCopyParallel,
+		FastCopyWorkers:       fastCopyWorkers,
+		FastCopyBufferSizeMB:  fastCopyBufferMB,
 	}
 
 	var ms meta.MetadataStorer

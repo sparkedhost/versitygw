@@ -28,6 +28,7 @@ import (
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/metrics"
+	"github.com/versity/versitygw/observability"
 	"github.com/versity/versitygw/s3api/controllers"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3api/utils"
@@ -92,6 +93,11 @@ func New(
 			EnableStackTrace:  true,
 			StackTraceHandler: stackTraceHandler,
 		}))
+
+	// Initialize OpenTelemetry tracing middleware
+	if observability.IsEnabled() {
+		app.Use(middlewares.TracingMiddleware())
+	}
 
 	// Logging middlewares
 	if !server.quiet {
