@@ -24,6 +24,10 @@ import (
 	"github.com/versity/versitygw/s3err"
 )
 
+const (
+	maxObjSizeLimit = 100 * 1024 * 1024 * 1024 // 100gb
+)
+
 func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region string, streamBody bool) fiber.Handler {
 	acct := accounts{root: root, iam: iam}
 

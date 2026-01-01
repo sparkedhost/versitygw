@@ -29,7 +29,7 @@ import (
 
 const (
 	iso8601Format   = "20060102T150405Z"
-	maxObjSizeLimit = 5 * 1024 * 1024 * 1024 // 5gb
+	maxObjSizeLimit = 100 * 1024 * 1024 * 1024 // 100gb
 )
 
 type RootUserConfig struct {
