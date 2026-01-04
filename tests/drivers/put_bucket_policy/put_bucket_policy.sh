@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bats
 
-# Copyright 2024 Versity Software
+# Copyright 2025 Versity Software
 # This file is licensed under the Apache License, Version 2.0
 # (the "License"); you may not use this file except in compliance
 # with the License.  You may obtain a copy of the License at
@@ -14,25 +14,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-check_tags_empty() {
-  if ! check_param_count_v2 "command type" 1 $#; then
+put_and_check_for_malformed_policy() {
+  if ! check_param_count "put_and_check_for_malformed_policy" "bucket, policy file" 2 $#; then
     return 1
   fi
-  if [ "$1" == 'aws' ] || [ "$1" == 's3api' ]; then
-    # shellcheck disable=SC2154
-    if [[ $tags == "" ]]; then
-      return 0
-    fi
-    tag_set=$(echo "$tags" | jq '.TagSet')
-    if [[ $tag_set != "[]" ]]; then
-      log 2 "error:  tags not empty: $tags"
-      return 1
-    fi
-  else
-    if [[ $tags != "" ]] && [[ $tags != *"No tags found"* ]]; then
-      log 2 "Error:  tags not empty: $tags"
-      return 1
-    fi
+  if put_bucket_policy "s3api" "$1" "$2"; then
+    log 2 "put succeeded despite malformed policy"
+    return 1
+  fi
+  # shellcheck disable=SC2154
+  if [[ "$put_bucket_policy_error" != *"MalformedPolicy"*"invalid action"* ]]; then
+    log 2 "invalid policy error: $put_bucket_policy_error"
+    return 1
   fi
   return 0
 }

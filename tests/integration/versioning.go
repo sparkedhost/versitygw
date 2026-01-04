@@ -3362,8 +3362,16 @@ func Versioning_PutGetDeleteObjectTagging_success(s *S3Conf) error {
 			},
 		}
 
+		compareVersionId := func(expected, input *string) error {
+			if getString(expected) != getString(input) {
+				return fmt.Errorf("expected the response versionId to be %s, instead got %s", getString(expected), getString(input))
+			}
+
+			return nil
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
-		_, err = s3client.PutObjectTagging(ctx, &s3.PutObjectTaggingInput{
+		res, err := s3client.PutObjectTagging(ctx, &s3.PutObjectTaggingInput{
 			Bucket:    &bucket,
 			Key:       &obj,
 			Tagging:   &tagging,
@@ -3371,6 +3379,10 @@ func Versioning_PutGetDeleteObjectTagging_success(s *S3Conf) error {
 		})
 		cancel()
 		if err != nil {
+			return err
+		}
+
+		if err := compareVersionId(versionId, res.VersionId); err != nil {
 			return err
 		}
 
@@ -3387,9 +3399,12 @@ func Versioning_PutGetDeleteObjectTagging_success(s *S3Conf) error {
 		if !areTagsSame(tagging.TagSet, out.TagSet) {
 			return fmt.Errorf("expected the object version tags to be %v, instead got %v", tagging.TagSet, out.TagSet)
 		}
+		if err := compareVersionId(versionId, out.VersionId); err != nil {
+			return err
+		}
 
 		ctx, cancel = context.WithTimeout(context.Background(), shortTimeout)
-		_, err = s3client.DeleteObjectTagging(ctx, &s3.DeleteObjectTaggingInput{
+		resp, err := s3client.DeleteObjectTagging(ctx, &s3.DeleteObjectTaggingInput{
 			Bucket:    &bucket,
 			Key:       &obj,
 			VersionId: versionId,
@@ -3399,13 +3414,25 @@ func Versioning_PutGetDeleteObjectTagging_success(s *S3Conf) error {
 			return err
 		}
 
+		if err := compareVersionId(versionId, resp.VersionId); err != nil {
+			return err
+		}
+
 		ctx, cancel = context.WithTimeout(context.Background(), shortTimeout)
-		_, err = s3client.GetObjectTagging(ctx, &s3.GetObjectTaggingInput{
+		r, err := s3client.GetObjectTagging(ctx, &s3.GetObjectTaggingInput{
 			Bucket:    &bucket,
 			Key:       &obj,
 			VersionId: versionId,
 		})
 		cancel()
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrBucketTaggingNotFound))
+		if err != nil {
+			return err
+		}
+
+		if len(r.TagSet) != 0 {
+			return fmt.Errorf("expected empty tag set, instead got %v", r.TagSet)
+		}
+
+		return nil
 	}, withVersioning(types.BucketVersioningStatusEnabled))
 }

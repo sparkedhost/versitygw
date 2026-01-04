@@ -1513,11 +1513,8 @@ func (p *Posix) CompleteMultipartUploadWithCopy(ctx context.Context, input *s3.C
 	}
 
 	b, err := p.meta.RetrieveAttribute(nil, bucket, object, etagkey)
-	if errors.Is(err, fs.ErrNotExist) && (input.IfMatch != nil || input.IfNoneMatch != nil) {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchKey)
-	}
-	if err == nil {
-		err = backend.EvaluateMatchPreconditions(string(b), input.IfMatch, input.IfNoneMatch)
+	if err == nil || errors.Is(err, fs.ErrNotExist) || errors.Is(err, meta.ErrNoSuchKey) {
+		err = backend.EvaluateObjectPutPreconditions(string(b), input.IfMatch, input.IfNoneMatch, err == nil)
 		if err != nil {
 			return res, "", err
 		}
@@ -3052,11 +3049,8 @@ func (p *Posix) PutObjectWithPostFunc(ctx context.Context, po s3response.PutObje
 
 	// evaluate preconditions
 	etagBytes, err := p.meta.RetrieveAttribute(nil, *po.Bucket, *po.Key, etagkey)
-	if errors.Is(err, fs.ErrNotExist) && (po.IfMatch != nil || po.IfNoneMatch != nil) {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
-	}
-	if err == nil {
-		err := backend.EvaluateMatchPreconditions(string(etagBytes), po.IfMatch, po.IfNoneMatch)
+	if err == nil || errors.Is(err, fs.ErrNotExist) || errors.Is(err, meta.ErrNoSuchKey) {
+		err = backend.EvaluateObjectPutPreconditions(string(etagBytes), po.IfMatch, po.IfNoneMatch, err == nil)
 		if err != nil {
 			return s3response.PutObjectOutput{}, err
 		}
@@ -3940,10 +3934,10 @@ func (p *Posix) GetObject(_ context.Context, input *s3.GetObjectInput) (*s3.GetO
 
 		var tagCount *int32
 		tags, err := p.getAttrTags(bucket, object, versionId)
-		if err != nil && !errors.Is(err, s3err.GetAPIError(s3err.ErrBucketTaggingNotFound)) {
+		if err != nil {
 			return nil, err
 		}
-		if tags != nil {
+		if len(tags) != 0 {
 			tgCount := int32(len(tags))
 			tagCount = &tgCount
 		}
@@ -4020,10 +4014,10 @@ func (p *Posix) GetObject(_ context.Context, input *s3.GetObjectInput) (*s3.GetO
 
 	var tagCount *int32
 	tags, err := p.getAttrTags(bucket, object, versionId)
-	if err != nil && !errors.Is(err, s3err.GetAPIError(s3err.ErrBucketTaggingNotFound)) {
+	if err != nil {
 		return nil, err
 	}
-	if tags != nil {
+	if len(tags) != 0 {
 		tgCount := int32(len(tags))
 		tagCount = &tgCount
 	}
@@ -4245,10 +4239,10 @@ func (p *Posix) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.
 
 	var tagCount *int32
 	tags, err := p.getAttrTags(bucket, object, versionId)
-	if err != nil && !errors.Is(err, s3err.GetAPIError(s3err.ErrBucketTaggingNotFound)) {
+	if err != nil {
 		return nil, err
 	}
-	if tags != nil {
+	if len(tags) != 0 {
 		tc := int32(len(tags))
 		tagCount = &tc
 	}
@@ -5029,6 +5023,10 @@ func (p *Posix) getAttrTags(bucket, object, versionId string) (map[string]string
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
 	}
 	if errors.Is(err, meta.ErrNoSuchKey) {
+		if object != "" {
+			// return empty tag set for object tagging
+			return tags, nil
+		}
 		return nil, s3err.GetAPIError(s3err.ErrBucketTaggingNotFound)
 	}
 	if err != nil {

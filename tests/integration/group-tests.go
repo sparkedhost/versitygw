@@ -38,6 +38,7 @@ func TestAuthentication(ts *TestState) {
 	ts.Run(Authentication_invalid_sha256_payload_hash)
 	ts.Run(Authentication_md5)
 	ts.Run(Authentication_signature_error_incorrect_secret_key)
+	ts.Run(Authentication_with_expect_header)
 }
 
 func TestPresignedAuthentication(ts *TestState) {
@@ -778,6 +779,7 @@ func TestFullFlow(ts *TestState) {
 	TestDeleteObjects(ts)
 	TestCopyObject(ts)
 	TestPutObjectTagging(ts)
+	TestGetObjectTagging(ts)
 	TestDeleteObjectTagging(ts)
 	TestCreateMultipartUpload(ts)
 	TestUploadPart(ts)
@@ -1092,6 +1094,7 @@ func TestRouter(ts *TestState) {
 	ts.Run(RouterPUTObjectOnlyUploadId)
 	ts.Run(RouterGetUploadsWithKey)
 	ts.Run(RouterCopySourceNotAllowed)
+	ts.Run(RouterListVersionsWithKey)
 }
 
 func TestUnsignedStreaminPayloadTrailer(ts *TestState) {
@@ -1164,6 +1167,7 @@ func GetIntTests() IntTests {
 		"Authentication_invalid_sha256_payload_hash":                               Authentication_invalid_sha256_payload_hash,
 		"Authentication_md5":                                                       Authentication_md5,
 		"Authentication_signature_error_incorrect_secret_key":                      Authentication_signature_error_incorrect_secret_key,
+		"Authentication_with_expect_header":                                        Authentication_with_expect_header,
 		"PresignedAuth_security_token_not_supported":                               PresignedAuth_security_token_not_supported,
 		"PresignedAuth_unsupported_algorithm":                                      PresignedAuth_unsupported_algorithm,
 		"PresignedAuth_ECDSA_not_supported":                                        PresignedAuth_ECDSA_not_supported,
@@ -1773,6 +1777,7 @@ func GetIntTests() IntTests {
 		"RouterPUTObjectOnlyUploadId":                                              RouterPUTObjectOnlyUploadId,
 		"RouterGetUploadsWithKey":                                                  RouterGetUploadsWithKey,
 		"RouterCopySourceNotAllowed":                                               RouterCopySourceNotAllowed,
+		"RouterListVersionsWithKey":                                                RouterListVersionsWithKey,
 		"UnsignedStreaminPayloadTrailer_malformed_trailer":                         UnsignedStreaminPayloadTrailer_malformed_trailer,
 		"UnsignedStreamingPayloadTrailer_missing_invalid_dec_content_length":       UnsignedStreamingPayloadTrailer_missing_invalid_dec_content_length,
 		"UnsignedStreamingPayloadTrailer_invalid_trailing_checksum":                UnsignedStreamingPayloadTrailer_invalid_trailing_checksum,
